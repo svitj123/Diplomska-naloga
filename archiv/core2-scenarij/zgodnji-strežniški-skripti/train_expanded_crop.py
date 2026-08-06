@@ -1,0 +1,541 @@
+from pathlib import Path
+import time
+
+import h5py
+import numpy as np
+from PIL import Image
+from spectral.io import envi
+
+
+# ============================================================
+# NASTAVITVE
+# ============================================================
+
+# Trenutno pripravljamo testni sklop BR961–BR1001.
+DATA_DIR = Path("/home/sjesenk/mayerich2-učni")
+
+HEADER_FILE = DATA_DIR / "br1003-br2085b.hdr"
+CLASS_DIR = DATA_DIR / "supervised-class"
+
+OUTPUT_FILE = Path(
+
+    "/home/sjesenk/local/train_expanded_crop.hdf5"
+
+)
+
+CLASSES = [
+    "coll",
+    "epith",
+    "fibro",
+    "lymph",
+    "myo",
+    "necrosis",
+]
+
+# Večji testni prostorski izrez:
+# 800 vrstic × 1200 stolpcev.
+ROW_START = 500
+ROW_END = 1300
+
+COL_START = 500
+COL_END = 1700
+
+# Obdržimo celoten spektralni razpon 750–4000 cm^-1,
+# vendar vzamemo vsak drugi shranjeni kanal.
+#
+# Surovi podatki imajo korak 2 cm^-1.
+# Tako dobimo korak 4 cm^-1 in približno 813 kanalov.
+SPECTRAL_STEP = 2
+
+# Število vrstic, ki jih preberemo in zapišemo naenkrat.
+# Manjša vrednost pomeni manj RAM-a, vendar nekoliko več operacij.
+CHUNK_ROWS = 25
+
+# Prostorska HDF5 chunk velikost.
+HDF5_CHUNK_ROWS = 25
+HDF5_CHUNK_COLS = 50
+
+
+# ============================================================
+# POMOŽNE FUNKCIJE
+# ============================================================
+
+def format_duration(seconds: float) -> str:
+    """Pretvori sekunde v berljiv zapis."""
+    seconds = max(0, int(seconds))
+
+    hours, remainder = divmod(seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+
+    if hours > 0:
+        return f"{hours} h {minutes} min {seconds} s"
+
+    if minutes > 0:
+        return f"{minutes} min {seconds} s"
+
+    return f"{seconds} s"
+
+
+def read_mask(path: Path) -> np.ndarray:
+    """Prebere PNG-masko in jo pretvori v bool matriko."""
+    if not path.exists():
+        raise FileNotFoundError(f"Maska ne obstaja: {path}")
+
+    with Image.open(path) as image:
+        return np.asarray(image) > 0
+
+
+def print_progress(
+    processed_rows: int,
+    total_rows: int,
+    start_time: float,
+) -> None:
+    """Izpiše napredek, hitrost in ETA."""
+    elapsed = time.perf_counter() - start_time
+    fraction = processed_rows / total_rows
+    percent = fraction * 100
+
+    if elapsed > 0:
+        rows_per_second = processed_rows / elapsed
+    else:
+        rows_per_second = 0
+
+    remaining_rows = total_rows - processed_rows
+
+    if rows_per_second > 0:
+        eta_seconds = remaining_rows / rows_per_second
+    else:
+        eta_seconds = 0
+
+    bar_width = 30
+    filled = int(bar_width * fraction)
+    bar = "█" * filled + "░" * (bar_width - filled)
+
+    print(
+        f"\r[{bar}] "
+        f"{percent:6.2f}% | "
+        f"{processed_rows:4d}/{total_rows} vrstic | "
+        f"pretečeno: {format_duration(elapsed)} | "
+        f"ETA: {format_duration(eta_seconds)}",
+        end="",
+        flush=True,
+    )
+
+
+# ============================================================
+# GLAVNI POSTOPEK
+# ============================================================
+
+def main() -> None:
+    total_start_time = time.perf_counter()
+
+    if not HEADER_FILE.exists():
+        raise FileNotFoundError(
+            f"ENVI .hdr datoteka ne obstaja:\n{HEADER_FILE}"
+        )
+
+    print("Odpiram ENVI podatke ...", flush=True)
+
+    image = envi.open(str(HEADER_FILE))
+
+    print(f"Celotna oblika surovih podatkov: {image.shape}")
+
+    full_height, full_width, full_band_count = image.shape
+
+    if not (0 <= ROW_START < ROW_END <= full_height):
+        raise ValueError(
+            f"Neveljaven vrstični izrez: "
+            f"{ROW_START}:{ROW_END}, višina je {full_height}."
+        )
+
+    if not (0 <= COL_START < COL_END <= full_width):
+        raise ValueError(
+            f"Neveljaven stolpčni izrez: "
+            f"{COL_START}:{COL_END}, širina je {full_width}."
+        )
+
+    wavelengths_full = np.asarray(
+        [
+            float(value)
+            for value in image.metadata["wavelength"]
+        ],
+        dtype=np.float32,
+    )
+
+    if len(wavelengths_full) != full_band_count:
+        raise ValueError(
+            "Število valovnih števil se ne ujema "
+            "s številom spektralnih kanalov."
+        )
+
+    spectral_indices = np.arange(
+        0,
+        full_band_count,
+        SPECTRAL_STEP,
+        dtype=np.int32,
+    )
+
+    wavelengths = wavelengths_full[spectral_indices]
+
+    output_height = ROW_END - ROW_START
+    output_width = COL_END - COL_START
+    output_band_count = len(wavelengths)
+
+    print()
+    print("Nastavitve izhoda:")
+    print(
+        f"  Prostorski izrez: "
+        f"{output_height} × {output_width}"
+    )
+    print(
+        f"  Spektralni kanali: "
+        f"{output_band_count}"
+    )
+    print(
+        f"  Spektralni razpon: "
+        f"{wavelengths[0]:.1f}–"
+        f"{wavelengths[-1]:.1f} cm^-1"
+    )
+
+    if len(wavelengths) > 1:
+        print(
+            f"  Korak valovnih števil: "
+            f"{wavelengths[1] - wavelengths[0]:.1f} cm^-1"
+        )
+
+    uncompressed_gib = (
+        output_height
+        * output_width
+        * output_band_count
+        * np.dtype(np.float32).itemsize
+        / 1024**3
+    )
+
+    print(
+        f"  Nestisnjena velikost data: "
+        f"približno {uncompressed_gib:.2f} GiB"
+    )
+
+    # --------------------------------------------------------
+    # Maske in razredi
+    # --------------------------------------------------------
+
+    print("\nNalagam masko tkiva in razrede ...", flush=True)
+
+    full_tissue_mask = read_mask(
+
+        CLASS_DIR / "mask.png"
+
+    )
+
+    tissue_mask = full_tissue_mask[
+        ROW_START:ROW_END,
+        COL_START:COL_END,
+    ]
+
+    if tissue_mask.shape != (
+        output_height,
+        output_width,
+    ):
+        raise ValueError(
+            f"Nepričakovana oblika tissue_mask: "
+            f"{tissue_mask.shape}"
+        )
+
+    class_map = np.full(
+        tissue_mask.shape,
+        -1,
+        dtype=np.int8,
+    )
+
+    for class_index, class_name in enumerate(CLASSES):
+        class_path = (
+            CLASS_DIR / f"class_{class_name}.png"
+        )
+
+        full_class_mask = read_mask(class_path)
+
+        class_mask = full_class_mask[
+            ROW_START:ROW_END,
+            COL_START:COL_END,
+        ]
+
+        if class_mask.shape != tissue_mask.shape:
+            raise ValueError(
+                f"Maska razreda {class_name} ima napačno "
+                f"obliko: {class_mask.shape}"
+            )
+
+        class_map[class_mask] = class_index
+
+        print(
+            f"  {class_name}: "
+            f"{np.count_nonzero(class_map == class_index):,}"
+        )
+
+    tissue_count = int(np.count_nonzero(tissue_mask))
+    annotated_count = int(
+        np.count_nonzero(class_map != -1)
+    )
+
+    print(f"  Tkivni piksli: {tissue_count:,}")
+    print(f"  Anotirani piksli: {annotated_count:,}")
+
+    invalid_annotations = np.count_nonzero(
+        (class_map != -1) & (~tissue_mask)
+    )
+
+    if invalid_annotations:
+        print(
+            "OPOZORILO: "
+            f"{invalid_annotations} anotiranih pikslov "
+            "ni znotraj tissue_mask."
+        )
+
+    # --------------------------------------------------------
+    # Priprava memmap
+    # --------------------------------------------------------
+
+    print("\nOdpiram podatkovni memmap ...", flush=True)
+
+    # BIP pogled omogoča indeksiranje v obliki:
+    # [vrstica, stolpec, spektralni kanal].
+    data_memmap = image.open_memmap(
+        interleave="bip"
+    )
+
+    # --------------------------------------------------------
+    # Priprava izhodnega HDF5
+    # --------------------------------------------------------
+
+    OUTPUT_FILE.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    if OUTPUT_FILE.exists():
+        print(
+            f"\nIzhodna datoteka že obstaja in bo "
+            f"prepisana:\n{OUTPUT_FILE}"
+        )
+        OUTPUT_FILE.unlink()
+
+    amide_index = int(
+        np.abs(wavelengths - 1650).argmin()
+    )
+
+    amide_wavenumber = float(
+        wavelengths[amide_index]
+    )
+
+    print(
+        f"\nNajbližji kanal Amide I: "
+        f"{amide_wavenumber:.1f} cm^-1"
+    )
+
+    amide_values_parts = []
+
+    print("\nZačenjam branje in zapisovanje po blokih:")
+    progress_start_time = time.perf_counter()
+
+    with h5py.File(OUTPUT_FILE, "w") as output:
+        data_dataset = output.create_dataset(
+            "data",
+            shape=(
+                output_height,
+                output_width,
+                output_band_count,
+            ),
+            dtype="float32",
+            chunks=(
+                min(
+                    HDF5_CHUNK_ROWS,
+                    output_height,
+                ),
+                min(
+                    HDF5_CHUNK_COLS,
+                    output_width,
+                ),
+                output_band_count,
+            ),
+            compression="lzf",
+        )
+
+        output.create_dataset(
+            "wns",
+            data=wavelengths,
+            dtype="float32",
+        )
+
+        output.create_dataset(
+            "tissue_mask",
+            data=tissue_mask,
+            dtype="bool",
+            compression="lzf",
+        )
+
+        output.create_dataset(
+            "classes",
+            data=class_map,
+            dtype="int8",
+            compression="lzf",
+        )
+
+        output.attrs["source_header"] = str(
+            HEADER_FILE
+        )
+        output.attrs["row_start"] = ROW_START
+        output.attrs["row_end"] = ROW_END
+        output.attrs["col_start"] = COL_START
+        output.attrs["col_end"] = COL_END
+        output.attrs["spectral_step"] = SPECTRAL_STEP
+        output.attrs["amide_i_wavenumber"] = (
+            amide_wavenumber
+        )
+
+        for local_row_start in range(
+            0,
+            output_height,
+            CHUNK_ROWS,
+        ):
+            local_row_end = min(
+                local_row_start + CHUNK_ROWS,
+                output_height,
+            )
+
+            source_row_start = (
+                ROW_START + local_row_start
+            )
+            source_row_end = (
+                ROW_START + local_row_end
+            )
+
+            # Preberemo le trenutni vrstični blok.
+            block = np.array(
+                data_memmap[
+                    source_row_start:source_row_end,
+                    COL_START:COL_END,
+                    ::SPECTRAL_STEP,
+                ],
+                dtype=np.float32,
+                copy=True,
+            )
+
+            expected_shape = (
+                local_row_end - local_row_start,
+                output_width,
+                output_band_count,
+            )
+
+            if block.shape != expected_shape:
+                raise ValueError(
+                    f"Blok ima napačno obliko "
+                    f"{block.shape}, pričakovano "
+                    f"{expected_shape}."
+                )
+
+            block_tissue_mask = tissue_mask[
+                local_row_start:local_row_end,
+                :,
+            ]
+
+            # Zberemo vrednosti Amide I pred normalizacijo.
+            block_amide = block[
+                :,
+                :,
+                amide_index,
+            ][block_tissue_mask]
+
+            if block_amide.size:
+                amide_values_parts.append(
+                    block_amide.copy()
+                )
+
+            # Enako kot v mentorjevem notebooku:
+            # zunaj tkiva postavimo vrednosti na 0.
+            block[~block_tissue_mask] = 0
+
+            data_dataset[
+                local_row_start:local_row_end,
+                :,
+                :,
+            ] = block
+
+            processed_rows = local_row_end
+
+            print_progress(
+                processed_rows=processed_rows,
+                total_rows=output_height,
+                start_time=progress_start_time,
+            )
+
+    print()
+
+    # --------------------------------------------------------
+    # Statistika Amide I
+    # --------------------------------------------------------
+
+    if amide_values_parts:
+        amide_values = np.concatenate(
+            amide_values_parts
+        )
+
+        finite_amide_values = amide_values[
+            np.isfinite(amide_values)
+        ]
+
+        if finite_amide_values.size:
+            print("\nAmide I statistika pred normalizacijo:")
+            print(
+                f"  kanal: "
+                f"{amide_wavenumber:.1f} cm^-1"
+            )
+            print(
+                f"  min: "
+                f"{np.min(finite_amide_values):.6f}"
+            )
+            print(
+                f"  mediana: "
+                f"{np.median(finite_amide_values):.6f}"
+            )
+            print(
+                f"  povprečje: "
+                f"{np.mean(finite_amide_values):.6f}"
+            )
+            print(
+                f"  max: "
+                f"{np.max(finite_amide_values):.6f}"
+            )
+
+    # --------------------------------------------------------
+    # Končni pregled
+    # --------------------------------------------------------
+
+    total_elapsed = (
+        time.perf_counter() - total_start_time
+    )
+
+    file_size_gib = (
+        OUTPUT_FILE.stat().st_size / 1024**3
+    )
+
+    print("\nKončano.")
+    print(f"Izhodna datoteka: {OUTPUT_FILE}")
+    print(
+        f"Oblika data: "
+        f"({output_height}, "
+        f"{output_width}, "
+        f"{output_band_count})"
+    )
+    print(
+        f"Velikost datoteke: "
+        f"{file_size_gib:.2f} GiB"
+    )
+    print(
+        f"Skupni čas: "
+        f"{format_duration(total_elapsed)}"
+    )
+
+
+if __name__ == "__main__":
+    main()
