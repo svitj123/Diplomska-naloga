@@ -489,7 +489,7 @@ def find_temperature(logits, y):
         e = np.exp(s)
         p = np.clip(e / e.sum(axis=1, keepdims=True), 1e-9, 1.0)
         return -np.mean(np.log(p[np.arange(len(y)), y]))
-    res = minimize_scalar(neg_ll, bounds=(0.1, 50.0), method='bounded')
+    res = minimize_scalar(neg_ll, bounds=(1.0, 50.0), method='bounded')
     T   = res.x
     print(f"  Temperature (skalarna): T={T:.4f}  {neg_ll(1.0):.5f} -> {neg_ll(T):.5f}")
     return T
@@ -511,7 +511,7 @@ def find_temperature_per_class(logits, y, n_classes=NUM_CLASSES):
         p = np.clip(e / e.sum(axis=1, keepdims=True), 1e-9, 1.0)
         return -np.mean(np.log(p[np.arange(len(y)), y]))
     x0 = np.ones(n_classes)
-    bounds = [(0.1, 50.0)] * n_classes
+    bounds = [(1.0, 50.0)] * n_classes
     res = minimize(neg_ll, x0, method='L-BFGS-B', bounds=bounds)
     T_vec = res.x
     print(f"  Temperature (per-class): " +

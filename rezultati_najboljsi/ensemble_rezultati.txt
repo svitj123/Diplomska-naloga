@@ -1,0 +1,52 @@
+=== 1. Nalaganje ground truth (TEST) ===
+  439,704 anotiranih pikslov iz 22 crop-ov
+
+=== 2. Nalaganje napovedi posameznih modelov ===
+  CNN widerT (73.11%)              OA= 73.11%  ll=1.02355  (porocano: 73.11%/1.02331)
+  CNN lrn+smooth3 (72.90%)         OA= 72.90%  ll=1.01159  (porocano: 72.90%/1.01135)
+  CNN no24 (72.16%)                OA= 72.16%  ll=1.01670  (porocano: 72.16%/1.01644)
+  CNN lrn (72.02%)                 OA= 72.02%  ll=1.02823  (porocano: 72.02%/1.02797)
+  CNN labelsmooth (70.09%)         OA= 70.09%  ll=0.98092  (porocano: 70.09%/0.98092)
+  CNN ls005 (69.70%)               OA= 69.70%  ll=0.99778  (porocano: 69.70%/0.99778)
+  CNN ls02 (69.87%)                OA= 69.87%  ll=1.03002  (porocano: 69.87%/1.03002)
+  ViT hybrid p15 (58.05%)          OA= 58.05%  ll=1.39631  (porocano: 58.05%/1.39631)
+  ViT plain (52.82%)               OA= 52.82%  ll=1.45889  (porocano: 52.82%/1.45889)
+
+=== 3. Ansambli (povprecje verjetnosti) ===
+  Kombinacija                                                           OA   log-loss
+  --------------------------------------------------------------  --------  ---------
+  CNN top-2                                                         73.01%    1.01706
+  CNN top-3                                                         72.94%    1.00130
+  CNN top-4                                                         72.64%    1.00154
+  CNN raznolika regularizacija (widerT+lrn_smooth3+labelsmooth)     72.42%    0.95730
+  CNN vseh 7                                                        71.86%    0.95432
+  CNN widerT + ViT p15                                              69.65%    1.00467
+  CNN top-3 + ViT p15                                               72.69%    0.94958
+  CNN vseh 7 + ViT p15                                              72.10%    0.94701
+
+  Najboljsi ansambel po OA:       CNN top-2 (73.01%)
+  Najboljsi ansambel po log-loss: CNN vseh 7 + ViT p15 (0.94701)
+
+  Per-class: CNN top-2
+    Razred         N        OA    Log-loss
+  --------  --------  --------  ----------
+         0    81,546    90.50%     0.55841
+         1    85,984    68.61%     1.28496
+         2    39,201     7.49%     2.43983
+         3    17,545    26.62%     1.72020
+         4   161,974    81.60%     0.85333
+         5    53,454    90.61%     0.50770
+    SKUPAJ   439,704    73.01%     1.01706
+
+  Per-class: CNN vseh 7 + ViT p15
+    Razred         N        OA    Log-loss
+  --------  --------  --------  ----------
+         0    81,546    92.96%     0.29120
+         1    85,984    70.59%     1.07667
+         2    39,201     9.12%     2.39736
+         3    17,545    28.31%     1.67700
+         4   161,974    76.12%     1.00904
+         5    53,454    91.04%     0.24770
+    SKUPAJ   439,704    72.10%     0.94701
+
+  Referenca clanka: SVM=56.41%, CNN-spektralno=62.52%, CNN-prostorsko=79.45%
