@@ -6,6 +6,10 @@ epitelij, fibroblasti, limfociti, miofibroblasti, nekroza) iz FTIR
 hiperspektralnih slik, na pravem cross-slide train/test razdelku iz članka
 (train: BR1003, BR2085b; test: BR961, BR1001 — fizično ločeni tkivni rezini).
 
+> **Za pisanje diplome**: celoten pregled (podatki, metodologija, vsi rezultati,
+> ugotovitve, metodološka opozorila, ponovljivost) je v
+> [`DOKUMENTACIJA_ZA_DIPLOMO.md`](DOKUMENTACIJA_ZA_DIPLOMO.md).
+
 ## Struktura repozitorija
 
 **Trenutni pipeline (cross-slide train/test split, glavno delo):**
